@@ -73,16 +73,31 @@ fun_extract = lapply(fun_extract, tibble)
 #Change the names of the tibbles and Add Id row back in
 fun_extract = lapply(fun_extract, function(x) name_weather_vars(x, var_name))
 fun_extract = bind_rows(fun_extract) |>
-  mutate(id = row_number())
+  mutate(ID = row_number())
 }
 
 #These are each a table of lead weather variables for each avalanches observation
 avalanches_tmean = make_weather_df(tmean, ava_vect, "tmean")
+big_avalanche = left_join(avalanches, avalanches_tmean)
+
 avalanches_tmax = make_weather_df(tmax, ava_vect, "tmax")
+big_avalanche = left_join(big_avalanche, avalanches_tmax)
+
 avalanches_tmin = make_weather_df(tmin, ava_vect, "tmin")
+big_avalanche = left_join(big_avalanche, avalanches_tmin)
+
 avalanches_ppt = make_weather_df(ppt, ava_vect, "ppt")
+big_avalanche = left_join(big_avalanche, avalanches_ppt)
+
 avalanches_tdmean = make_weather_df(tdmean, ava_vect, "tdmean")
+big_avalanche = left_join(big_avalanche, avalanches_tdmean)
+
 avalanches_vpdmin = make_weather_df(vpdmin, ava_vect, "vpdmin")
+big_avalanche = left_join(big_avalanche, avalanches_vpdmin)
+
 avalanches_vpdmax = make_weather_df(vpdmax, ava_vect, "vpdmax")
+big_avalanche = left_join(big_avalanche, avalanches_vpdmax)
+
+write_csv(big_avalanche, file = "clean_data/avalanche_weather")
 
 
