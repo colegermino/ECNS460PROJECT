@@ -1,6 +1,8 @@
 library(terra)
 library(tidyverse)
 library(purrr)
+library(elevatr)
+library(sf)
 
 #Bring in weather rasters
 tmean = rast("raw_data/teton_weather_rasters/teton_tmean_raster.tif")
@@ -10,6 +12,8 @@ ppt = rast("raw_data/teton_weather_rasters/teton_ppt_raster.tif")
 tdmean = rast("raw_data/teton_weather_rasters/teton_tdmean_raster.tif")
 vpdmin = rast("raw_data/teton_weather_rasters/teton_vpdmin_raster.tif")
 vpdmax = rast("raw_data/teton_weather_rasters/teton_vpdmax_raster.tif")
+
+
 
 #Creates a dataset of all of them together
 weather_data = sds(tmean, tmax, tmin, ppt, tdmean, vpdmin, vpdmax)
@@ -52,7 +56,6 @@ avalanches = avalanches_pre |>
 #making a vector of points where avalanche observations take place
 ava_vect = vect(avalanches, geom = c("longitude", "latitude"), crs = "NAD83")
 
-
 #Changes the names of a tibble to the names I want
 name_weather_vars = function(df, variable){
   var_names = sapply(seq(30, 0, -1), function(x) paste(variable, "_lead", as.character(x), sep= ""))
@@ -76,6 +79,10 @@ fun_extract = bind_rows(fun_extract) |>
   mutate(ID = row_number())
 }
 
+#Extract elevation for each point
+elevation = get_elev_point(locations = st_as_sf(ava_vect), prj = "NAD83", src = "epqs")|>
+  select(ID, elevation)
+
 #These are each a table of lead weather variables for each avalanches observation
 avalanches_tmean = make_weather_df(tmean, ava_vect, "tmean")
 big_avalanche = left_join(avalanches, avalanches_tmean)
@@ -98,6 +105,9 @@ big_avalanche = left_join(big_avalanche, avalanches_vpdmin)
 avalanches_vpdmax = make_weather_df(vpdmax, ava_vect, "vpdmax")
 big_avalanche = left_join(big_avalanche, avalanches_vpdmax)
 
+big_avalanche = left_join(big_avalanche, elevation)
+
+#this is the big end result table
 write_csv(big_avalanche, file = "clean_data/avalanche_weather")
 
 
