@@ -1,0 +1,161 @@
+---
+title: "Visualization Write-Up"
+author: "Jonas Kahila"
+date: "2024-11-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = '/Users/jonas/Library/CloudStorage/OneDrive-MontanaStateUniversity/ECNS 460/ECNS460PROJECT/data')
+
+library(tidyverse)
+library(tmap)
+library(sf)
+library(terra)
+library(elevatr)
+library(geodata)
+library(cowplot)
+```
+
+## Data
+
+We use avalanche data from the Bridger Teton National Avalanche Center. For avalanches from January 30, 2020 to December 31, 2023, we scraped the latitude, longitude, and date.
+
+We gather historical weather from the PRISM climate group API. We use rasters of daily normal precipitation, mean temperature, max temperature, mean temperature, minimum vapor pressure deficit, maximum vapor pressure deficit, and mean dew point at a 4km resolution from 2020 through 2024. For each avalanche, we extract the available weather data from the preceeding 30 days. 
+
+We the elevatr package to extract elevation data for each avalanche. 
+
+```{r}
+#load the data
+
+date_pattern = c(tmonth = ".*?", "/", tday = ".*?", "/", tyear = ".*?")
+
+data = read_csv("Avalanche_weather_with_control.csv") |>
+  separate_wider_regex(cols = date,
+                       patterns = date_pattern,
+                       too_few = "align_start")|>
+  mutate(date = paste("20", tyear, "/", tmonth, "/", tday, sep = ""))|>
+  mutate(date = as.Date(date)) |>
+  mutate(avalanche_occured = ifelse(Avalanche_Occured_Binary == 1, "observed", "simulated"),
+         avalanche_occured = factor(avalanche_occured))
+
+ava_vect = vect(data, geom = c("longitude", "latitude"), crs = "NAD83")
+ava_points = st_as_sf(ava_vect)
+```
+
+
+## Learning from the data
+
+###Geographic data
+
+We can tell that avalanches happen where the elevation is high and the temperature is cold -- in the mountains. It's less obvious whether avalanches occur more often in area with more tree coverage. Although 
+
+```{r}
+#Teton boundary
+teton_nf_boundary = read_sf("raw_data/grte_tracts/grte_boundary.shp")
+tmap_mode("view")
+
+#elevation raster
+teton_elevation = get_elev_raster(teton_nf_boundary, z = 10, clip = "locations")
+
+#Tree cover raster
+trees = landcover(var = "trees", path = "raw_data")
+trees = project(trees, "NAD83")
+trees = crop(trees, teton_nf_boundary)
+teton_trees = mask(trees, teton_nf_boundary)
+
+#weather rasters
+tmean = rast("raw_data/teton_weather_rasters/teton_tmean_raster.tif")
+tmax = rast("raw_data/teton_weather_rasters/teton_tmax_raster.tif")
+tmin = rast("raw_data/teton_weather_rasters/teton_tmin_raster.tif")
+ppt = rast("raw_data/teton_weather_rasters/teton_ppt_raster.tif")
+tdmean = rast("raw_data/teton_weather_rasters/teton_tdmean_raster.tif")
+vpdmin = rast("raw_data/teton_weather_rasters/teton_vpdmin_raster.tif")
+vpdmax = rast("raw_data/teton_weather_rasters/teton_vpdmax_raster.tif")
+
+#set crs
+teton_boundary2 = st_transform(teton_nf_boundary, st_crs(tmean))
+
+#map
+
+tmap_mode("plot")
+
+tm_shape(teton_nf_boundary) + tm_borders() +
+  tm_shape(tmax[["20230101"]]) +tm_raster(alpha = 0.5, title = "Max Temp. 01-01-2023 (degerees C" ) +
+  tm_shape(ava_points) + tm_dots() +
+  tm_layout(main.title = "Max Temp. 01-01-2023 and Avalanche Observations", legend.outside = T,
+            main.title.size = 1)
+
+tm_shape(teton_nf_boundary) + tm_borders() +
+  tm_shape(teton_elevation) + 
+  tm_raster(alpha = 0.5, palette = "Blues", legend.reverse = T, title = "Elevation(m)") +
+  tm_shape(ava_points) + tm_dots() +
+  tm_layout(main.title = "Elevation and Avalanche Observations", legend.outside = T,
+            main.title.size = 1)
+
+tm_shape(teton_nf_boundary) + tm_borders() +
+  tm_shape(teton_trees) + 
+  tm_raster(alpha = 0.5, palette = "Greens", legend.reverse = T, title = "") +
+  tm_shape(ava_points) + tm_dots() +
+  tm_layout(main.title = "Tree Cover and Avalanche Observations", legend.outside = T,
+            main.title.size = 1)
+```
+
+By comparing geographic data where avalanches occur and don't occur, we can start to learn what characteristics may be useful in predicting avalanches terrain.
+
+### Weather Data
+
+We can learn about which weather conditions correlate with avalanches in a similar fashion. We simulate 462 avalanches in locations where we observed avalanches (3 simulated in each observed location), but with random dates. We expect observed avalanches not to occur at random time, but rather seasonally and when weather conditions create risky snow pack.
+
+```{r}
+data |>
+  ggplot(aes(date)) +
+  geom_density(aes(color = avalanche_occured))
+
+data|>
+  ggplot(aes(x = date, y = (Avalanche_Occured_Binary - 0.5))) +
+  geom_point(aes(color = avalanche_occured)) +
+  scale_y_continuous(limits = c(-1,1), labels = NULL, name = NULL) +
+  ggtitle("Simulated and Observed Avalanches Over Time")
+
+data |>
+  ggplot(aes(x = date, fill = avalanche_occured)) +
+  geom_density(alpha = 0.5, adjust = 0.5) +
+  ggtitle("Simulated and Observed Avalanches Over Time")
+```
+
+The graph above works as a sanity check -- our simulated avalanches happen at random times during the time period and observed avalanches happen seasonally. However, this graph only really tells us that avalanches happen during the winter.
+
+Looking at only the winter of 2022-23, we see clusters of avalanche activity in time. Avalanches don't happen at random times. Avalanches happen when weather conditions align. As an example, we see that real avalanches happen more often than randomly simulated avalanches when it there is 5-8 mm of precipitation the day before. 
+
+```{r}
+#Making a graph with only one winter of observations
+win_23_start = as.Date("2022-12-01")
+win_23_end = as.Date("2023-05-15")
+
+win23 = data |>
+  filter(date > win_23_start)|>
+  filter(date < win_23_end)
+
+win23time = win23|>
+  ggplot(aes(x = date, fill = avalanche_occured)) +
+  geom_density(alpha = 0.3, adjust = 0.5) +
+  ggtitle("Winter 2022-23") +
+  theme(legend.position = "bottom")
+
+win23ppt = win23 |>
+  ggplot(aes(ppt_lead1, fill = avalanche_occured)) +
+  geom_density(adjust = 0.5, alpha = 0.5) +
+  theme(legend.position = "bottom") +
+  xlab("Precipitation(mm)")
+
+
+plot_grid(plotlist = list(win23time, win23ppt), align = "h")
+```
+
+
+
+
+
+

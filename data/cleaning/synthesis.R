@@ -58,7 +58,7 @@ ava_vect = vect(avalanches, geom = c("longitude", "latitude"), crs = "NAD83")
 
 #Changes the names of a tibble to the names I want
 name_weather_vars = function(df, variable){
-  var_names = sapply(seq(30, 0, -1), function(x) paste(variable, "_lead", as.character(x), sep= ""))
+  var_names = sapply(seq(30, 0, -1), function(x) paste(variable, "_lead", as.character(x), sep = ""))
   setNames(df, var_names)
 }
 
@@ -110,4 +110,5 @@ big_avalanche = left_join(big_avalanche, elevation)
 #this is the big end result table
 write_csv(big_avalanche, file = "clean_data/avalanche_weather")
 
+plot(random_control)
 
