@@ -1,12 +1,12 @@
 set.seed(123)  # Set a seed for reproducibility
 library(caret)
 library(randomForest)
+library(dplyr)
 #-------------------------------------------------------------------------------#
 data  = read.csv("~/Desktop/ECNS460PROJECT/MasterData2.csv")
-str(data)
-summary(data)
+
 #-------------------------------------------------------------------------------#
-# data processing 
+# Data processing
 #-------------------------------------------------------------------------------#
 data <- data %>%
   mutate(
@@ -33,26 +33,61 @@ data <- data %>%
     ppt_15day_sum = rowSums(select(., starts_with("ppt_lead0"):starts_with("ppt_lead14")), na.rm = TRUE),
     ppt_30day_sum = rowSums(select(., starts_with("ppt_lead0"):starts_with("ppt_lead29")), na.rm = TRUE)
   )
+
 #-------------------------------------------------------------------------------#
 # Splitting the data into training (80%) and testing (20%) sets
 #-------------------------------------------------------------------------------#
+set.seed(123)  # For reproducibility
 train_index <- createDataPartition(data$Avalanche.binary., p = 0.8, list = FALSE)
 train_data <- data[train_index, ]
 test_data <- data[-train_index, ]
+
 #-------------------------------------------------------------------------------#
-# Train the random forest model
+# Hyperparameter tuning with caret
 #-------------------------------------------------------------------------------#
-rf_model <- randomForest(Avalanche.binary. ~ ., data = train_data, ntree = 100, importance = TRUE)
+# Define a tuning grid
+tune_grid <- expand.grid(
+  mtry = c(2, 3, 4, 5)  # Number of variables to randomly sample
+)
 
-# Display feature importance
-varImpPlot(rf_model)
+# Train control with 10-fold cross-validation
+train_control <- trainControl(
+  method = "cv",              # Cross-validation
+  number = 10,                # 10 folds
+  verboseIter = FALSE,        # Suppress verbose output
+  sampling = "up"           # Apply downsampling
+)
 
-# Get predicted probabilities for the avalanche (class "1") on the test set
-rf_prob <- predict(rf_model, newdata = test_data, type = "prob")
+# Train the model using caret's train function
+set.seed(123)  # For reproducibility
+rf_model_tuned <- train(
+  Avalanche.binary. ~ .,      # Model formula
+  data = train_data,          # Training data
+  method = "rf",              # Random forest
+  trControl = train_control,  # Cross-validation settings
+  tuneGrid = tune_grid,       # Hyperparameter grid
+  importance = TRUE           # Calculate variable importance
+)
 
-# Prob. of avalanche > 0.6, risk index = high
-# 0.2 < prob of avalanche < 0.6, risk index = moderate
-# Prob. of avalanche < 0.2, risk index = low
+# Display the best parameters
+cat("Best parameters:\n")
+print(rf_model_tuned$bestTune)
+
+#-------------------------------------------------------------------------------#
+# Evaluate the model on the test set
+#-------------------------------------------------------------------------------#
+rf_pred <- predict(rf_model_tuned, newdata = test_data)
+
+# Confusion matrix for binary classification
+conf_matrix <- confusionMatrix(rf_pred, test_data$Avalanche.binary.)
+print(conf_matrix)
+
+
+#-------------------------------------------------------------------------------#
+# Calculate error rate and risk levels
+#-------------------------------------------------------------------------------#
+rf_prob <- predict(rf_model_tuned, newdata = test_data, type = "prob")
+
 test_data <- test_data %>%
   mutate(Risk_Level = case_when(
     rf_prob[, "1"] > 0.6 ~ "High",
@@ -60,77 +95,92 @@ test_data <- test_data %>%
     TRUE ~ "Low"
   ))
 
-table(test_data$Risk_Level)
-
-# Predict binary outcomes
-rf_pred <- predict(rf_model, newdata = test_data)
-
-# Confusion matrix for binary classification
-confusionMatrix(rf_pred, test_data$Avalanche.binary.)
-
-# Create a new data frame with just the coordinates and risk level
-coordinates_risk <- test_data %>%
-  select(latitude, longitude, date, Risk_Level)
-
-# Display the first few rows to verify
-head(coordinates_risk)
-
 #-------------------------------------------------------------------------------#
-# Calculate error rate and display misclassified observations
+# Save the tuned model
 #-------------------------------------------------------------------------------#
+saveRDS(rf_model_tuned, "rf_tuned_model.rds")
+cat("Tuned model saved as 'rf_tuned_model.rds'\n") 
 
-# Add a column to indicate whether the prediction was accurate based on actual avalanche occurrences
-test_data <- test_data %>%
+results_df <- data.frame(
+  Date = test_data$date,
+  Latitude = test_data$latitude,
+  Longitude = test_data$longitude,
+  Actual = test_data$Avalanche.binary.,
+  Predicted = rf_pred,
+  Probability_0 = rf_prob[, "0"],
+  Probability_1 = rf_prob[, "1"]
+)
+
+# Step 3: Add Risk_Level based on predicted probabilities (optional)
+results_df <- results_df %>%
   mutate(
-    Prediction_Error = case_when(
-      Avalanche.binary. == 1 & Risk_Level %in% c("Low", "Moderate") ~ "Error",
-      Avalanche.binary. == 0 & Risk_Level == "High" ~ "Error",
-      TRUE ~ "Correct"
-    )
+    Risk_Level = case_when(
+      Probability_1 > 0.6 ~ "High",
+      Probability_1 > 0.2 & Probability_1 <= 0.6 ~ "Moderate",
+      TRUE ~ "Low"
+    ),
+    Correct = ifelse(Actual == Predicted, "Yes", "No")
   )
 
-# Calculate and print the error rate
-error_rate <- mean(test_data$Prediction_Error == "Error")
-cat("Error Rate:", error_rate * 100, "%\n")
 
-# Separate correctly classified and incorrectly classified observations
-correct_observations <- test_data %>%
-  filter(Prediction_Error == "Correct") %>%
-  select(date, latitude, longitude, Avalanche.binary., Risk_Level, Prediction_Error)
 
-misclassified_observations <- test_data %>%
-  filter(Prediction_Error == "Error") %>%
-  select(date, latitude, longitude, Avalanche.binary., Risk_Level, Prediction_Error)
+accurately_predicted_df <- results_df %>%
+  filter(Correct == "Yes")
 
-# Print summary and details for correctly classified observations
-cat("Correctly Classified Observations:\n")
-print(correct_observations)
+# Create a data frame with all inaccurately predicted observations
+inaccurately_predicted_df <- results_df %>%
+  filter(Correct == "No")
 
-# Print summary and details for incorrectly classified observations
-cat("\nMisclassified Observations:\n")
-print(misclassified_observations)
+# View the first few rows of each data frame
+cat("Accurately Predicted Observations:\n")
+head(accurately_predicted_df)
 
+cat("\nInaccurately Predicted Observations:\n")
+head(inaccurately_predicted_df)
 
 #-------------------------------------------------------------------------------#
-# adjusted Error Rate
+# Calculate weighted risk score
 #-------------------------------------------------------------------------------#
-test_data <- test_data %>%
-  mutate(
-    Prediction_Error = case_when(
-      Avalanche.binary. == 1 & Risk_Level == "Low" ~ "Error",   # Avalanche occurred but risk predicted as Low
-      Avalanche.binary. == 0 & Risk_Level == "High" ~ "Error",  # No avalanche but risk predicted as High
-      TRUE ~ "Correct"  # All other cases, including Moderate, are considered correct
-    )
-  )
 
-# Calculate and print the adjusted error rate
-error_rate <- mean(test_data$Prediction_Error == "Error")
-cat("Adjusted Error Rate:", error_rate * 100, "%\n")
+calculate_weighted_score <- function(actual, predicted_risk) {
+  # Initialize score vector
+  score <- numeric(length(actual))
+  
+  # Loop through each prediction
+  for (i in seq_along(actual)) {
+    if (predicted_risk[i] == "Moderate") {
+      # 'Moderate' predictions get 0.65 points regardless of actual outcome
+      score[i] <- 0.65
+    } else if (predicted_risk[i] == "High" && actual[i] == "1") {
+      # Correct 'High' prediction when avalanche occurs
+      score[i] <- 1
+    } else if (predicted_risk[i] == "Low" && actual[i] == "0") {
+      # Correct 'Low' prediction when no avalanche occurs
+      score[i] <- 1
+    } else {
+      # Incorrect 'High' or 'Low' prediction
+      score[i] <- 0
+    }
+  }
+  
+  # Return the score vector
+  return(score)
+}
 
-# Create a new data frame with date, latitude, longitude, actual avalanche occurrence, predicted risk level, and prediction accuracy
-adjusted_results_df <- test_data %>%
-  select(date, latitude, longitude, Avalanche.binary., Risk_Level, Prediction_Error)
+# Apply the scoring func  tion to your data
+results_df$Weighted_Score <- calculate_weighted_score(
+  actual = results_df$Actual,
+  predicted_risk = results_df$Risk_Level
+)
 
-# Display the first few rows of the new data frame to verify
-head(adjusted_results_df)
-#-------------------------------------------------------------------------------#
+# Calculate total weighted score
+total_weighted_score <- sum(results_df$Weighted_Score)
+
+# Calculate maximum possible score
+max_score <- nrow(results_df)  # Each observation could get a maximum of 1 point
+
+# Calculate weighted accuracy
+weighted_accuracy <- total_weighted_score / max_score
+
+# Display the weighted accuracy
+cat("Weighted Accuracy:", round(weighted_accuracy * 100, 2), "%\n")
